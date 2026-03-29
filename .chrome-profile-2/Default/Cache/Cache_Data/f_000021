@@ -1,0 +1,867 @@
+﻿const APP_CONFIG = {
+  mapLanguage: "zh-TW",
+  mapRegion: "TW",
+  fallbackCenter: { lat: 25.033968, lng: 121.564468 },
+  searchRadiusMeters: 5000,
+  movementThresholdMeters: 250,
+  detailsConcurrency: 4,
+};
+
+const state = {
+  map: null,
+  infoWindow: null,
+  markers: [],
+  lastSearchCenter: null,
+  pendingSearchCenter: null,
+  searchInProgress: false,
+  suppressNextIdle: false,
+  searchToken: 0,
+};
+
+const dom = {
+  locateMeButton: document.getElementById("locate-me"),
+  resultCount: document.getElementById("result-count"),
+  results: document.getElementById("results"),
+  searchAreaButton: document.getElementById("search-this-area"),
+  statusMessage: document.getElementById("status-message"),
+  statusTitle: document.getElementById("status-title"),
+  summaryCenter: document.getElementById("summary-center"),
+  summaryMode: document.getElementById("summary-mode"),
+};
+
+document.addEventListener("DOMContentLoaded", () => {
+  void initialize();
+});
+
+async function initialize() {
+  attachEvents();
+  setStatus("載入地圖中", "準備初始化 Google Maps 與咖啡廳搜尋");
+
+  try {
+    await loadGoogleMapsScript(getGoogleMapsApiKey());
+    await initializeMap();
+
+    const center = await resolveInitialCenter();
+    state.map.setCenter(center);
+    state.map.setZoom(14);
+    await runSearch(center, "已依目前位置搜尋 5 公里內咖啡廳");
+  } catch (error) {
+    console.error(error);
+    const message = extractErrorMessage(error);
+    setStatus("初始化失敗", message);
+    setSummaryMode("初始化失敗");
+    renderEmptyState("地圖初始化失敗", message);
+  }
+}
+
+function attachEvents() {
+  dom.locateMeButton.addEventListener("click", async () => {
+    try {
+      setStatus("重新定位中", "準備回到目前位置");
+      const center = await getUserLocation();
+      state.suppressNextIdle = true;
+      state.map.panTo(center);
+      state.map.setZoom(14);
+      await runSearch(center, "已回到目前位置並重新搜尋");
+    } catch (error) {
+      setStatus("重新定位失敗", extractErrorMessage(error));
+    }
+  });
+
+  dom.searchAreaButton.addEventListener("click", async () => {
+    if (!state.pendingSearchCenter) {
+      return;
+    }
+
+    await runSearch(state.pendingSearchCenter, "已依目前地圖中心重新搜尋");
+  });
+}
+
+async function initializeMap() {
+  const { Map, InfoWindow } = await google.maps.importLibrary("maps");
+
+  state.map = new Map(document.getElementById("map"), {
+    center: APP_CONFIG.fallbackCenter,
+    zoom: 13,
+    clickableIcons: false,
+    fullscreenControl: false,
+    mapTypeControl: false,
+    streetViewControl: false,
+    styles: [
+      {
+        featureType: "poi.business",
+        stylers: [{ visibility: "off" }],
+      },
+    ],
+  });
+
+  state.infoWindow = new InfoWindow();
+  state.map.addListener("idle", handleMapIdle);
+}
+
+function handleMapIdle() {
+  if (state.suppressNextIdle) {
+    state.suppressNextIdle = false;
+    return;
+  }
+
+  if (!state.lastSearchCenter) {
+    return;
+  }
+
+  const center = state.map.getCenter();
+  if (!center) {
+    return;
+  }
+
+  const centerLiteral = { lat: center.lat(), lng: center.lng() };
+  const movedDistance = distanceMeters(centerLiteral, state.lastSearchCenter);
+
+  if (movedDistance >= APP_CONFIG.movementThresholdMeters) {
+    state.pendingSearchCenter = centerLiteral;
+    dom.searchAreaButton.classList.remove("hidden");
+    dom.searchAreaButton.textContent = "搜尋這個區域";
+  } else {
+    state.pendingSearchCenter = null;
+    dom.searchAreaButton.classList.add("hidden");
+  }
+}
+
+async function resolveInitialCenter() {
+  const queryCenter = getQueryCenter();
+  if (queryCenter) {
+    return queryCenter;
+  }
+
+  try {
+    return await getUserLocation();
+  } catch (error) {
+    setStatus(
+      "定位未授權，改用展示位置",
+      `${extractErrorMessage(error)}，已改用台北 101 周邊作為展示搜尋中心。`
+    );
+    return APP_CONFIG.fallbackCenter;
+  }
+}
+
+async function runSearch(center, statusText) {
+  if (state.searchInProgress) {
+    return;
+  }
+
+  const token = ++state.searchToken;
+  state.searchInProgress = true;
+  state.pendingSearchCenter = null;
+  dom.searchAreaButton.classList.add("hidden");
+  dom.searchAreaButton.textContent = "搜尋中...";
+  dom.resultCount.textContent = "搜尋中";
+  dom.summaryCenter.textContent = formatCoordinate(center);
+  renderLoadingState();
+  setStatus("搜尋咖啡廳中", statusText);
+
+  try {
+    const result = await resolveCafeResults(center, token);
+    if (token !== state.searchToken) {
+      return;
+    }
+
+    const sortedPlaces = result.places.sort(comparePlaces);
+    state.lastSearchCenter = center;
+    setSummaryMode(result.modeLabel);
+    renderMarkers(sortedPlaces);
+    renderResults(sortedPlaces);
+    setStatus("搜尋完成", result.note);
+  } catch (error) {
+    console.error(error);
+    const message = extractErrorMessage(error);
+    setSummaryMode("搜尋失敗");
+    renderMarkers([]);
+    renderEmptyState("無法取得附近咖啡廳", message);
+    setStatus("搜尋失敗", message);
+  } finally {
+    if (token === state.searchToken) {
+      state.searchInProgress = false;
+      dom.searchAreaButton.textContent = "搜尋這個區域";
+    }
+  }
+}
+
+async function resolveCafeResults(center, token) {
+  try {
+    const livePlaces = await fetchNearbyCafes(center, token);
+    if (livePlaces.length) {
+      return {
+        places: livePlaces,
+        modeLabel: "Google Places 即時資料",
+        note: `已整理 ${livePlaces.length} 間咖啡廳，依評分與評論數排序。`,
+      };
+    }
+
+    return {
+      places: buildDemoPlaces(center),
+      modeLabel: "示範資料模式",
+      note: "Google Places 沒有回傳可用咖啡廳，已改用示範資料避免清單為空。",
+    };
+  } catch (error) {
+    console.warn("Live Places request failed. Falling back to demo data.", error);
+    const reason = extractErrorMessage(error);
+    return {
+      places: buildDemoPlaces(center),
+      modeLabel: "示範資料模式",
+      note: `Google Places 搜尋失敗：${reason}。已改用示範資料供介面驗收。`,
+    };
+  }
+}
+
+async function fetchNearbyCafes(center, token) {
+  const { PlacesService, PlacesServiceStatus } = await google.maps.importLibrary("places");
+  const service = new PlacesService(state.map);
+  const nearbyResults = await nearbySearchAllPages(service, center, PlacesServiceStatus);
+
+  const deduped = new Map();
+  for (const place of nearbyResults) {
+    if (!place.place_id || !place.geometry?.location) {
+      continue;
+    }
+
+    const location = toLatLngLiteral(place.geometry.location);
+    if (distanceMeters(center, location) > APP_CONFIG.searchRadiusMeters) {
+      continue;
+    }
+
+    if (!deduped.has(place.place_id)) {
+      deduped.set(place.place_id, place);
+    }
+  }
+
+  const queue = Array.from(deduped.values());
+  const detailed = [];
+  const workers = Array.from({ length: APP_CONFIG.detailsConcurrency }, async () => {
+    while (queue.length > 0) {
+      const place = queue.shift();
+      if (!place) {
+        return;
+      }
+
+      if (token !== state.searchToken) {
+        return;
+      }
+
+      try {
+        const detail = await getPlaceDetails(service, place.place_id, PlacesServiceStatus);
+        detailed.push(normalizeLivePlace(detail));
+      } catch (error) {
+        console.warn("Place details request failed for", place.place_id, error);
+        detailed.push(normalizeLivePlace(place));
+      }
+    }
+  });
+
+  await Promise.all(workers);
+  return detailed;
+}
+
+function nearbySearchAllPages(service, center, PlacesServiceStatus) {
+  return new Promise((resolve, reject) => {
+    const allResults = [];
+
+    service.nearbySearch(
+      {
+        location: center,
+        radius: APP_CONFIG.searchRadiusMeters,
+        type: "cafe",
+      },
+      function handlePage(results, status, pagination) {
+        if (status === PlacesServiceStatus.ZERO_RESULTS) {
+          resolve(allResults);
+          return;
+        }
+
+        if (status !== PlacesServiceStatus.OK || !results) {
+          reject(new Error(`PlacesService nearbySearch failed: ${status}`));
+          return;
+        }
+
+        allResults.push(...results);
+
+        if (pagination?.hasNextPage) {
+          window.setTimeout(() => pagination.nextPage(), 2000);
+          return;
+        }
+
+        resolve(allResults);
+      }
+    );
+  });
+}
+
+function getPlaceDetails(service, placeId, PlacesServiceStatus) {
+  return new Promise((resolve, reject) => {
+    service.getDetails(
+      {
+        placeId,
+        fields: [
+          "business_status",
+          "formatted_address",
+          "formatted_phone_number",
+          "geometry",
+          "international_phone_number",
+          "name",
+          "opening_hours",
+          "place_id",
+          "price_level",
+          "rating",
+          "reviews",
+          "types",
+          "url",
+          "user_ratings_total",
+          "website",
+        ],
+      },
+      (place, status) => {
+        if (status === PlacesServiceStatus.OK && place) {
+          resolve(place);
+          return;
+        }
+
+        reject(new Error(`PlacesService getDetails failed: ${status}`));
+      }
+    );
+  });
+}
+
+function normalizeLivePlace(place) {
+  return {
+    id: place.place_id || `live-${Math.random().toString(36).slice(2, 9)}`,
+    displayName: place.name || "未命名咖啡廳",
+    formattedAddress: place.formatted_address || place.vicinity || "未提供地址",
+    googleMapsURI: place.url || "",
+    websiteURI: place.website || "",
+    location: place.geometry?.location ? toLatLngLiteral(place.geometry.location) : null,
+    rating: place.rating,
+    userRatingCount: place.user_ratings_total,
+    priceLevel: formatLegacyPriceLevel(place.price_level),
+    primaryTypeDisplayName: formatLegacyTypes(place.types),
+    regularOpeningHours: {
+      weekdayDescriptions: place.opening_hours?.weekday_text || [],
+    },
+    nationalPhoneNumber: place.formatted_phone_number || "",
+    internationalPhoneNumber: place.international_phone_number || "",
+    businessStatus: place.business_status || "",
+    editorialSummary: "Google Maps JavaScript PlacesService 未提供 editorial summary，已改列出 API 可取得的詳細資料。",
+    reviews: normalizeReviews(place.reviews || []),
+    source: "live",
+  };
+}
+
+function normalizeReviews(reviews) {
+  return reviews.slice(0, 3).map((review) => ({
+    authorName: review.author_name || "Google Maps 使用者",
+    authorUrl: review.author_url || "",
+    rating: review.rating,
+    relativeTime: review.relative_time_description || "時間未提供",
+    text: review.text || "",
+  }));
+}
+
+function buildDemoPlaces(center) {
+  const samples = [
+    {
+      name: "示範咖啡 Alpha",
+      east: 320,
+      north: 280,
+      rating: 4.9,
+      count: 1824,
+      address: "台北市信義區示範路 11 號",
+      summary: "明亮採光、手沖豆單完整，適合工作與短會議。",
+      hours: ["週一至週五：08:00-20:00", "週六至週日：09:00-21:00"],
+      phone: "02 2345 6789",
+      website: "https://www.google.com/maps",
+      reviews: [
+        "豆子新鮮，拿鐵平衡感很好。",
+        "座位間距舒服，插座夠多。",
+        "甜點不會太甜，搭配黑咖啡很剛好。",
+      ],
+    },
+    {
+      name: "示範咖啡 Beta",
+      east: -540,
+      north: 610,
+      rating: 4.8,
+      count: 1346,
+      address: "台北市信義區樣板街 27 號",
+      summary: "義式咖啡穩定，早餐與早午餐選擇多，外帶速度快。",
+      hours: ["週一至週日：07:30-18:30"],
+      phone: "02 2456 7890",
+      website: "https://www.google.com/maps",
+      reviews: [
+        "早餐盤份量夠，咖啡不會搶味。",
+        "吧台速度快，外帶很方便。",
+        "尖峰時段人多，但翻桌速度還可以。",
+      ],
+    },
+    {
+      name: "示範咖啡 Gamma",
+      east: 870,
+      north: -420,
+      rating: 4.7,
+      count: 986,
+      address: "台北市信義區測試巷 5 號",
+      summary: "安靜的社區型咖啡館，適合閱讀與長時間停留。",
+      hours: ["週二至週日：10:00-22:00", "週一公休"],
+      phone: "02 2567 8901",
+      website: "https://www.google.com/maps",
+      reviews: [
+        "音樂音量剛好，很適合閱讀。",
+        "窗邊座位舒服，下午光線很好。",
+        "店員會主動介紹當日豆單。",
+      ],
+    },
+  ];
+
+  return samples.map((sample, index) => ({
+    id: `demo-${index + 1}`,
+    displayName: sample.name,
+    formattedAddress: sample.address,
+    googleMapsURI: sample.website,
+    websiteURI: sample.website,
+    location: offsetCoordinate(center, sample.east, sample.north),
+    rating: sample.rating,
+    userRatingCount: sample.count,
+    priceLevel: "中價位",
+    primaryTypeDisplayName: "咖啡廳",
+    regularOpeningHours: { weekdayDescriptions: sample.hours },
+    nationalPhoneNumber: sample.phone,
+    internationalPhoneNumber: `+886 ${sample.phone.replace(/^0/, "")}`,
+    businessStatus: "OPERATIONAL",
+    editorialSummary: `示範資料：${sample.summary}`,
+    reviews: sample.reviews.map((text, reviewIndex) => ({
+      authorName: `示範使用者 ${reviewIndex + 1}`,
+      authorUrl: "",
+      rating: Math.max(4, 5 - reviewIndex * 0.5),
+      relativeTime: `${reviewIndex + 1} 個月前`,
+      text,
+    })),
+    source: "demo",
+  }));
+}
+
+function renderResults(places) {
+  dom.resultCount.textContent = `${places.length} 筆`;
+
+  if (!places.length) {
+    renderEmptyState("沒有找到咖啡廳", "請移動地圖後再按一次搜尋這個區域。");
+    return;
+  }
+
+  dom.results.innerHTML = "";
+  const fragment = document.createDocumentFragment();
+  places.forEach((place, index) => {
+    fragment.appendChild(createPlaceCard(place, index));
+  });
+  dom.results.appendChild(fragment);
+}
+
+function createPlaceCard(place, index) {
+  const article = document.createElement("article");
+  article.className = "place-card";
+
+  article.innerHTML = `
+    <div class="place-card__top">
+      <div>
+        <span class="place-rank">#${index + 1}</span>
+        <h3>${escapeHtml(place.displayName)}</h3>
+      </div>
+      <div class="place-score">
+        <strong>${formatRating(place.rating)}</strong>
+        <span>${formatRatingCount(place.userRatingCount)}</span>
+      </div>
+    </div>
+    <p class="place-type">${escapeHtml(place.primaryTypeDisplayName || "咖啡廳")}</p>
+    <p class="place-address">${escapeHtml(place.formattedAddress || "未提供地址")}</p>
+    <div class="chip-list">${renderFactChips(place)}</div>
+    <div class="detail-grid">
+      <div>
+        <span>總覽</span>
+        <p>${escapeHtml(place.editorialSummary || "未提供總覽")}</p>
+      </div>
+      <div>
+        <span>營業資訊</span>
+        <p>${escapeHtml(formatOpeningHours(place.regularOpeningHours))}</p>
+      </div>
+      <div>
+        <span>電話</span>
+        <p>${escapeHtml(place.nationalPhoneNumber || place.internationalPhoneNumber || "未提供電話")}</p>
+      </div>
+      <div>
+        <span>菜單 / 網站</span>
+        <p>${renderWebsiteLink(place)}</p>
+      </div>
+    </div>
+    <div class="link-list">${renderActionLinks(place)}</div>
+    <section class="reviews-block">
+      <h4>評論前 3 則</h4>
+      ${renderReviews(place.reviews || [])}
+    </section>
+    <div class="provider-list">${renderSource(place)}</div>
+  `;
+
+  article.addEventListener("click", () => {
+    focusPlace(place);
+  });
+
+  return article;
+}
+
+function renderFactChips(place) {
+  const chips = [];
+
+  if (place.priceLevel) {
+    chips.push(`<span>${escapeHtml(place.priceLevel)}</span>`);
+  }
+  if (place.businessStatus) {
+    chips.push(`<span>${escapeHtml(place.businessStatus)}</span>`);
+  }
+  if (place.websiteURI) {
+    chips.push("<span>提供網站</span>");
+  }
+  if (place.reviews?.length) {
+    chips.push("<span>含評論</span>");
+  }
+  if (place.regularOpeningHours?.weekdayDescriptions?.length) {
+    chips.push("<span>含營業時間</span>");
+  }
+
+  return chips.length ? chips.join("") : "<span>Google 未提供更多欄位</span>";
+}
+
+function renderWebsiteLink(place) {
+  const href = place.websiteURI || place.googleMapsURI;
+  if (!href) {
+    return "Google Places 未提供網站欄位";
+  }
+
+  return `<a href="${escapeAttribute(href)}" target="_blank" rel="noreferrer">開啟網站或地圖頁</a>`;
+}
+
+function renderActionLinks(place) {
+  const links = [];
+
+  if (place.googleMapsURI) {
+    links.push(`<a href="${escapeAttribute(place.googleMapsURI)}" target="_blank" rel="noreferrer">Google Maps</a>`);
+  }
+  if (place.websiteURI) {
+    links.push(`<a href="${escapeAttribute(place.websiteURI)}" target="_blank" rel="noreferrer">網站</a>`);
+  }
+
+  return links.join("") || "<span>未提供可操作連結</span>";
+}
+
+function renderReviews(reviews) {
+  if (!reviews.length) {
+    return `
+      <div class="review-card">
+        <p>Google Places API 沒有回傳評論。</p>
+      </div>
+    `;
+  }
+
+  return reviews
+    .slice(0, 3)
+    .map((review) => {
+      const author = review.authorUrl
+        ? `<a href="${escapeAttribute(review.authorUrl)}" target="_blank" rel="noreferrer">${escapeHtml(review.authorName)}</a>`
+        : escapeHtml(review.authorName);
+
+      return `
+        <article class="review-card">
+          <div class="review-card__meta">
+            <strong>${author}</strong>
+            <span>${formatRating(review.rating)} ・ ${escapeHtml(review.relativeTime)}</span>
+          </div>
+          <p>${escapeHtml(review.text || "未提供評論內容")}</p>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function renderSource(place) {
+  if (place.source === "demo") {
+    return "資料來源：示範資料模式。這表示地圖可載入，但 Places API 沒有成功回應。";
+  }
+
+  return "資料來源：Google Maps Platform";
+}
+
+function renderMarkers(places) {
+  for (const marker of state.markers) {
+    marker.setMap(null);
+  }
+
+  state.markers = [];
+
+  places.forEach((place, index) => {
+    if (!place.location) {
+      return;
+    }
+
+    const marker = new google.maps.Marker({
+      map: state.map,
+      position: place.location,
+      title: place.displayName,
+      label: index < 99 ? { text: String(index + 1), color: "#fffaf3", fontWeight: "700" } : undefined,
+    });
+
+    marker.addListener("click", () => focusPlace(place));
+    state.markers.push(marker);
+  });
+}
+
+function focusPlace(place) {
+  if (!place.location) {
+    return;
+  }
+
+  state.suppressNextIdle = true;
+  state.map.panTo(place.location);
+  state.infoWindow.setContent(`
+    <div class="info-window">
+      <strong>${escapeHtml(place.displayName)}</strong>
+      <p>${escapeHtml(place.formattedAddress || "")}</p>
+      <p>評分 ${formatRating(place.rating)} ｜ ${formatRatingCount(place.userRatingCount)}</p>
+    </div>
+  `);
+  state.infoWindow.setPosition(place.location);
+  state.infoWindow.open({ map: state.map });
+}
+
+function renderLoadingState() {
+  dom.results.innerHTML = `
+    <div class="empty-state">
+      <h3>搜尋中</h3>
+      <p>正在整理附近咖啡廳與詳細資料，請稍候。</p>
+    </div>
+  `;
+}
+
+function renderEmptyState(title, message) {
+  dom.resultCount.textContent = "0 筆";
+  dom.results.innerHTML = `
+    <div class="empty-state">
+      <h3>${escapeHtml(title)}</h3>
+      <p>${escapeHtml(message)}</p>
+    </div>
+  `;
+}
+
+function setStatus(title, message) {
+  dom.statusTitle.textContent = title;
+  dom.statusMessage.textContent = message;
+}
+
+function setSummaryMode(text) {
+  if (dom.summaryMode) {
+    dom.summaryMode.textContent = text;
+  }
+}
+
+function comparePlaces(a, b) {
+  const ratingDiff = (b.rating || 0) - (a.rating || 0);
+  if (ratingDiff !== 0) {
+    return ratingDiff;
+  }
+
+  return (b.userRatingCount || 0) - (a.userRatingCount || 0);
+}
+
+function formatCoordinate(center) {
+  return `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)}`;
+}
+
+function formatOpeningHours(openingHours) {
+  if (!openingHours?.weekdayDescriptions?.length) {
+    return "未提供營業時間";
+  }
+
+  return openingHours.weekdayDescriptions.join(" / ");
+}
+
+function formatRating(rating) {
+  if (typeof rating !== "number") {
+    return "未評分";
+  }
+
+  return `${rating.toFixed(1)} ★`;
+}
+
+function formatRatingCount(count) {
+  if (typeof count !== "number") {
+    return "評論數未提供";
+  }
+
+  return `${count.toLocaleString("zh-TW")} 則評論`;
+}
+
+function formatLegacyPriceLevel(priceLevel) {
+  const mapping = {
+    0: "免費",
+    1: "平價",
+    2: "中價位",
+    3: "高價位",
+    4: "非常高價位",
+  };
+
+  return mapping[priceLevel] || "";
+}
+
+function formatLegacyTypes(types) {
+  if (!Array.isArray(types) || !types.length) {
+    return "咖啡廳";
+  }
+
+  if (types.includes("cafe")) {
+    return "咖啡廳";
+  }
+
+  return types[0];
+}
+
+function toLatLngLiteral(location) {
+  return {
+    lat: typeof location.lat === "function" ? location.lat() : location.lat,
+    lng: typeof location.lng === "function" ? location.lng() : location.lng,
+  };
+}
+
+function distanceMeters(a, b) {
+  const earthRadius = 6371000;
+  const dLat = toRadians(b.lat - a.lat);
+  const dLng = toRadians(b.lng - a.lng);
+  const lat1 = toRadians(a.lat);
+  const lat2 = toRadians(b.lat);
+  const sinLat = Math.sin(dLat / 2);
+  const sinLng = Math.sin(dLng / 2);
+  const h = sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLng * sinLng;
+  return 2 * earthRadius * Math.asin(Math.sqrt(h));
+}
+
+function offsetCoordinate(origin, eastMeters, northMeters) {
+  const earthRadius = 6378137;
+  const dLat = northMeters / earthRadius;
+  const dLng = eastMeters / (earthRadius * Math.cos(toRadians(origin.lat)));
+
+  return {
+    lat: origin.lat + (dLat * 180) / Math.PI,
+    lng: origin.lng + (dLng * 180) / Math.PI,
+  };
+}
+
+function toRadians(value) {
+  return (value * Math.PI) / 180;
+}
+
+function getQueryCenter() {
+  const params = new URLSearchParams(window.location.search);
+  const latParam = params.get("lat");
+  const lngParam = params.get("lng");
+
+  if (latParam === null || lngParam === null) {
+    return null;
+  }
+
+  const lat = Number(latParam);
+  const lng = Number(lngParam);
+
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    return { lat, lng };
+  }
+
+  return null;
+}
+
+function getUserLocation() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error("這個瀏覽器不支援地理定位。"));
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        resolve({
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+        });
+      },
+      () => {
+        reject(new Error("無法取得目前位置。"));
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 60000,
+      }
+    );
+  });
+}
+
+function loadGoogleMapsScript() {
+  if (window.google?.maps) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    const callbackName = "__initGoogleMapsCoffeeApp";
+    window[callbackName] = () => {
+      resolve();
+      delete window[callbackName];
+    };
+
+    const script = document.createElement("script");
+    script.src =
+      "https://maps.googleapis.com/maps/api/js" +
+      `?key=${encodeURIComponent(getGoogleMapsApiKey())}` +
+      `&v=weekly&loading=async&libraries=places` +
+      `&language=${encodeURIComponent(APP_CONFIG.mapLanguage)}` +
+      `&region=${encodeURIComponent(APP_CONFIG.mapRegion)}` +
+      `&callback=${callbackName}`;
+    script.async = true;
+    script.onerror = () => reject(new Error("Google Maps JavaScript API 載入失敗。"));
+    document.head.appendChild(script);
+  });
+}
+
+function getGoogleMapsApiKey() {
+  const apiKey = window.RUNTIME_CONFIG?.googleMapsApiKey || "";
+
+  if (!apiKey) {
+    throw new Error(
+      "找不到 Google Maps API key。請在專案根目錄建立 .env.local 並設定 GOOGLE_MAPS_API_KEY。"
+    );
+  }
+
+  return apiKey;
+}
+
+function extractErrorMessage(error) {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  return "發生未預期錯誤。";
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function escapeAttribute(value) {
+  return escapeHtml(value);
+}
+
