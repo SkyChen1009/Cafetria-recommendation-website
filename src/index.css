@@ -1,0 +1,389 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  font-family: 'Inter', system-ui, sans-serif;
+  color: rgba(255, 255, 255, 0.9);
+  background-color: #121212;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+.app-container {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+/* Glass Panel */
+.glass-panel {
+  width: 450px;
+  min-width: 380px;
+  max-width: 45vw;
+  height: 100%;
+  background: rgba(20, 20, 20, 0.65);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 4px 0 32px rgba(0, 0, 0, 0.5);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-header {
+  padding: 24px;
+  background: rgba(18, 18, 18, 0.85);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.panel-title {
+  font-size: 24px;
+  font-weight: 700;
+  margin: 0 0 4px 0;
+  background: linear-gradient(90deg, #fde68a, #f59e0b);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  letter-spacing: 0.5px;
+}
+
+.panel-subtitle {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.5);
+  margin: 0;
+}
+
+.cafe-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cafe-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.cafe-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+
+/* Loader & States */
+.loader, .empty-state {
+  text-align: center;
+  color: rgba(255, 255, 255, 0.5);
+  margin-top: 40px;
+  font-size: 14px;
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .5; }
+}
+
+/* Cafe Card */
+.glass-card {
+  border-radius: 12px;
+  padding: 16px;
+  transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275), background 0.3s;
+}
+
+.glass-card:hover {
+  transform: translateY(-4px);
+  background: rgba(255, 255, 255, 0.07) !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2) !important;
+}
+
+.card-header {
+  margin-bottom: 8px;
+}
+
+.cafe-name {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 4px 0;
+  color: #fff;
+}
+
+.cafe-rating {
+  font-size: 14px;
+  color: #e5e5e5;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.star-rating {
+  color: #f59e0b;
+}
+
+.review-count {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 12px;
+}
+
+.cafe-overview {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.7);
+  line-height: 1.6;
+  margin: 12px 0;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 10px;
+  border-radius: 8px;
+}
+
+.cafe-links {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.cafe-links a {
+  font-size: 12px;
+  color: #60a5fa;
+  text-decoration: none;
+  background: rgba(96, 165, 250, 0.1);
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: background 0.2s;
+}
+
+.cafe-links a:hover {
+  background: rgba(96, 165, 250, 0.2);
+}
+
+/* Reviews */
+.reviews-section {
+  margin-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 12px;
+}
+
+.reviews-title {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  margin: 0 0 12px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.reviews-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.review-item {
+  background: rgba(0, 0, 0, 0.2);
+  padding: 10px;
+  border-radius: 8px;
+  border-left: 2px solid #525252;
+}
+
+.review-author {
+  font-size: 12px;
+  font-weight: 500;
+  color: #d4d4d4;
+  margin-bottom: 4px;
+}
+
+.review-text {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-style: italic;
+}
+
+/* Map Area */
+.map-area {
+  flex: 1;
+  position: relative;
+  height: 100%;
+}
+
+.search-btn-container {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+}
+
+.search-area-btn {
+  background: rgba(30, 30, 30, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: white;
+  padding: 12px 24px;
+  border-radius: 30px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  font-family: inherit;
+}
+
+.search-area-btn:hover {
+  background: rgba(50, 50, 50, 0.9);
+  transform: scale(1.05);
+  border-color: rgba(255, 255, 255, 0.25);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+/* InfoWindow Carousel */
+.carousel-container {
+  display: flex;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scroll-behavior: smooth;
+  gap: 8px;
+  padding-bottom: 4px; /* for scrollbar spacing */
+}
+
+.carousel-container::-webkit-scrollbar {
+  height: 4px;
+}
+
+.carousel-container::-webkit-scrollbar-thumb {
+  background: #ccc;
+  border-radius: 4px;
+}
+
+.carousel-img {
+  width: 240px;
+  height: 140px;
+  object-fit: cover;
+  border-radius: 6px;
+  scroll-snap-align: start;
+  flex-shrink: 0;
+}
+
+/* 原生風格地圖切換按鈕 */
+.native-layer-btn {
+  position: absolute;
+  top: 24px;
+  right: 16px;
+  z-index: 50;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: white;
+  border: none;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+  font-size: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+
+.native-layer-btn:hover {
+  transform: scale(1.05);
+}
+
+
+/* =========================================
+   Mobile Responsiveness (RWD) & App Style
+   ========================================= */
+@media (max-width: 768px) {
+  body {
+    overscroll-behavior-y: none;
+  }
+
+  .app-container {
+    display: block; /* 取消 flex，改由絕對定位層級控制 */
+  }
+
+  .map-area {
+    height: 100vh;
+    width: 100vw;
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+
+  /* 完美的懸浮底部抽屜 */
+  .glass-panel {
+    position: absolute;
+    bottom: 24px;
+    left: 12px;
+    right: 12px;
+    width: calc(100vw - 24px);
+    max-width: none;
+    min-width: 0;
+    height: 45vh; 
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 20px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+    z-index: 100;
+  }
+
+  /* 瘦身縮小標題 */
+  .panel-header {
+    padding: 12px 16px;
+    border-radius: 20px 20px 0 0;
+  }
+
+  .mobile-title {
+    font-size: 18px !important;
+  }
+  
+  .panel-subtitle {
+    font-size: 11px;
+    margin-top: 2px;
+  }
+
+  .cafe-list {
+    padding: 12px;
+  }
+
+  /* 將搜尋按鈕放到抽屜稍微上方的位置 */
+  .search-btn-container {
+    top: 24px; /* 還是維持上方比較符合 Google Map Native App，但可以微調 */
+    bottom: auto; 
+  }
+
+  .search-area-btn {
+    padding: 10px 20px;
+    font-size: 13px;
+  }
+
+  .cafe-list::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  .native-layer-btn {
+    top: 84px; /* 避開重新搜尋按鈕 */
+    right: 16px;
+  }
+}
